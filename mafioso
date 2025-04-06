@@ -1,0 +1,193 @@
+local player = game.Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+
+local ANIM_IDS = {
+    Idle = "rbxassetid://96029349600709",
+    Walk = "rbxassetid://106007312557465",
+    Run = "rbxassetid://100749549109265",
+    M1_1 = "rbxassetid://79710880505841",
+    M1_2 = "rbxassetid://70589254357640",
+    ComboStart = "rbxassetid://99135633258223",
+    ComboLoop = "rbxassetid://97167027849946",
+    ComboHit = "rbxassetid://95414473113522",
+    ComboMiss = "rbxassetid://111502301532583",
+    Blocked1 = "rbxassetid://137488556769630",
+    Blocked2 = "rbxassetid://90750159558178",
+    Blocked3 = "rbxassetid://134030301152023",
+    ReplaceFrom = "rbxassetid://80139543732416",
+    ReplaceTo = "rbxassetid://117334224937914"
+}
+
+local BLOCKED_ANIMATIONS = {
+    ANIM_IDS.Blocked1,
+    ANIM_IDS.Blocked2,
+    ANIM_IDS.Blocked3
+}
+
+local animations = {}
+local tracks = {}
+for name, id in pairs(ANIM_IDS) do
+    if not (name:match("Blocked") or name == "ReplaceFrom" or name == "ReplaceTo") then
+        animations[name] = Instance.new("Animation")
+        animations[name].AnimationId = id
+        tracks[name] = humanoid:LoadAnimation(animations[name])
+    end
+end
+
+local replaceAnim = Instance.new("Animation")
+replaceAnim.AnimationId = ANIM_IDS.ReplaceTo
+local replaceTrack = humanoid:LoadAnimation(replaceAnim)
+local dominantAnimationPlaying = false
+
+local function stopAllAnimationsExceptDominant()
+    for name, track in pairs(tracks) do
+        if track.IsPlaying and name ~= "ReplaceTo" then
+            track:Stop()
+        end
+    end
+end
+
+local function setupAnimationBlocker(animator)
+    animator.AnimationPlayed:Connect(function(track)
+        local currentAnimId = track.Animation.AnimationId
+        
+        if dominantAnimationPlaying then
+            if currentAnimId ~= ANIM_IDS.ReplaceTo then
+                track:Stop()
+            end
+            return
+        end
+        
+        for _, blockedId in ipairs(BLOCKED_ANIMATIONS) do
+            if currentAnimId == blockedId then
+                track:Stop()
+                return
+            end
+        end
+        
+        if currentAnimId == ANIM_IDS.ReplaceFrom then
+            track:Stop()
+            dominantAnimationPlaying = true
+            stopAllAnimationsExceptDominant()
+            replaceTrack:Play()
+        end
+    end)
+end
+
+replaceTrack.Stopped:Connect(function()
+    dominantAnimationPlaying = false
+end)
+
+local animator = humanoid:FindFirstChildOfClass("Animator")
+if animator then
+    setupAnimationBlocker(animator)
+else
+    humanoid.ChildAdded:Connect(function(child)
+        if child:IsA("Animator") then setupAnimationBlocker(child) end
+    end)
+end
+
+local COMBO_LOOP_DURATION = 4
+local HIT_SCAN_RANGE = 10
+local COMBO_COOLDOWN = 1
+
+local function checkHit()
+    local root = character:WaitForChild("HumanoidRootPart")
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {character}
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    local ray = workspace:Raycast(root.Position, root.CFrame.LookVector * HIT_SCAN_RANGE, params)
+    
+    if not ray then
+        return "air"
+    elseif ray.Instance:FindFirstAncestorWhichIsA("Model") then
+        local model = ray.Instance:FindFirstAncestorWhichIsA("Model")
+        return model:FindFirstChild("Humanoid") and "humanoid" or "object"
+    end
+    return "object"
+end
+
+local canAttack = true
+local function executeCombo()
+    if not canAttack or dominantAnimationPlaying then return end
+    canAttack = false
+    
+    tracks.ComboStart:Play()
+    tracks.ComboStart.Stopped:Wait()
+    
+    tracks.ComboLoop:Play()
+    local loopStart = os.clock()
+    local shouldContinueLooping = true
+    
+    while os.clock() - loopStart < COMBO_LOOP_DURATION and shouldContinueLooping do
+        local hitResult = checkHit()
+        
+        if hitResult == "humanoid" then
+            tracks.ComboLoop:Stop()
+            tracks.ComboHit:Play()
+            shouldContinueLooping = false
+        elseif hitResult == "object" then
+            tracks.ComboLoop:Stop()
+            tracks.ComboMiss:Play()
+            shouldContinueLooping = false
+        end
+        
+        task.wait(0.1)
+    end
+    
+    if shouldContinueLooping then
+        tracks.ComboLoop:Stop()
+        tracks.ComboMiss:Play()
+    end
+    
+    task.wait(COMBO_COOLDOWN)
+    canAttack = true
+end
+
+game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or dominantAnimationPlaying then return end
+    
+    if input.KeyCode == Enum.KeyCode.E then
+        executeCombo()
+    elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+    end
+end)
+
+local isMoving = false
+local function updateMovementAnimations()
+    if dominantAnimationPlaying then return end
+    
+    if isMoving then
+        if humanoid.WalkSpeed > 16 then
+            if not tracks.Run.IsPlaying then
+                tracks.Idle:Stop()
+                tracks.Walk:Stop()
+                tracks.Run:Play()
+            end
+        else
+            if not tracks.Walk.IsPlaying then
+                tracks.Idle:Stop()
+                tracks.Run:Stop()
+                tracks.Walk:Play()
+            end
+        end
+    else
+        if not tracks.Idle.IsPlaying then
+            tracks.Walk:Stop()
+            tracks.Run:Stop()
+            tracks.Idle:Play()
+        end
+    end
+end
+
+game:GetService("RunService").Heartbeat:Connect(function()
+    isMoving = humanoid.MoveDirection.Magnitude > 0
+    if not dominantAnimationPlaying then
+        updateMovementAnimations()
+    end
+end)
+
+humanoid.WalkSpeed = 16
+tracks.Idle:Play()
